@@ -73,6 +73,7 @@ class Scanner:
         extra_checkers: list[BaseChecker] | None = None,
         http_client: httpx.AsyncClient | None = None,
         options: dict[str, Any] | None = None,
+        enabled_checkers: list[str] | None = None,
     ) -> None:
         if not target_url and not config_path:
             raise ValueError("At least one of target_url or config_path must be provided.")
@@ -85,6 +86,7 @@ class Scanner:
         self.options = options or {}
         self._external_client = http_client
         self._extra_checkers: list[BaseChecker] = extra_checkers or []
+        self._enabled_checkers: list[str] | None = enabled_checkers
 
     # ------------------------------------------------------------------
     # Public API
@@ -167,6 +169,9 @@ class Scanner:
     def _load_checkers(self) -> list[BaseChecker]:
         checkers: list[BaseChecker] = [cls() for cls in _BUILTIN_CHECKERS]
         checkers.extend(self._extra_checkers)
+        if self._enabled_checkers is not None:
+            allowed = {n.lower() for n in self._enabled_checkers}
+            checkers = [c for c in checkers if c.name.lower() in allowed]
         logger.debug("[scanner] loaded %d checker(s): %s", len(checkers), [c.name for c in checkers])
         return checkers
 
@@ -177,7 +182,7 @@ class Scanner:
         client = httpx.AsyncClient(
             follow_redirects=True,
             headers={
-                "User-Agent": "ClawGuard/0.1.0 (security-scanner; +https://github.com/hidearmoon/clawguard)"
+                "User-Agent": "ClawGuard/0.3.0 (security-scanner; +https://github.com/hidearmoon/clawguard)"
             },
             verify=True,  # enforce SSL verification by default
         )

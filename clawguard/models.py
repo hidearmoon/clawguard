@@ -87,7 +87,7 @@ class ScanResult(BaseModel):
     duration_seconds: float = 0.0
     findings: list[Finding] = Field(default_factory=list)
     stats: SummaryStats = Field(default_factory=SummaryStats)
-    scanner_version: str = "0.1.0"
+    scanner_version: str = "0.3.0"
     checkers_run: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 

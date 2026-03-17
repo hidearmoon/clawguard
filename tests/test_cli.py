@@ -1,4 +1,4 @@
-"""Tests for the ClawGuard CLI – exit code logic and argument handling."""
+"""Tests for the ClawGuard CLI – exit code logic, argument handling, and commands."""
 from __future__ import annotations
 
 import json
@@ -85,31 +85,31 @@ def test_exit_code_no_findings_always_zero():
 
 
 # ---------------------------------------------------------------------------
-# CLI: argument validation
+# CLI: argument validation (scan subcommand)
 # ---------------------------------------------------------------------------
 
-def test_cli_no_args_exits_nonzero():
-    result = runner.invoke(app, [])
-    assert result.exit_code != 0
-
-
-def test_cli_requires_url_or_config():
-    result = runner.invoke(app, [])
+def test_cli_scan_requires_url_or_config():
+    result = runner.invoke(app, ["scan"])
     assert result.exit_code == 2
     assert "provide at least" in result.output
 
 
+def test_cli_unknown_checker_exits_with_error():
+    result = runner.invoke(app, ["scan", "--config", "/tmp", "--checkers", "unknown_checker"])
+    assert result.exit_code == 2
+    assert "Unknown checker" in result.output
+
+
 # ---------------------------------------------------------------------------
-# CLI: --json output (using a real tmp dir as config_path)
+# CLI: --json output
 # ---------------------------------------------------------------------------
 
 def test_cli_json_output_written(tmp_path):
-    """Running scan with --config and --json should write a valid JSON file."""
+    """scan --config --json should write a valid JSON file."""
     json_out = tmp_path / "report.json"
-    # Run against the tmp_path config dir (empty dir → no findings expected)
     result = runner.invoke(
         app,
-        ["--config", str(tmp_path), "--json", str(json_out), "--fail-on", "none"],
+        ["scan", "--config", str(tmp_path), "--json", str(json_out), "--fail-on", "none"],
     )
     assert json_out.exists(), "JSON report file should have been created"
     data = json.loads(json_out.read_text())
@@ -117,11 +117,93 @@ def test_cli_json_output_written(tmp_path):
     assert "stats" in data
 
 
+# ---------------------------------------------------------------------------
+# CLI: --html output
+# ---------------------------------------------------------------------------
+
+def test_cli_html_output_written(tmp_path):
+    """scan --config --html should write an HTML file."""
+    html_out = tmp_path / "report.html"
+    result = runner.invoke(
+        app,
+        ["scan", "--config", str(tmp_path), "--html", str(html_out), "--fail-on", "none"],
+    )
+    assert html_out.exists(), "HTML report file should have been created"
+    content = html_out.read_text()
+    assert "<!DOCTYPE html>" in content
+    assert "ClawGuard" in content
+
+
+# ---------------------------------------------------------------------------
+# CLI: --report (text) output
+# ---------------------------------------------------------------------------
+
+def test_cli_text_report_written(tmp_path):
+    """scan --config --report should write a text file."""
+    txt_out = tmp_path / "report.txt"
+    result = runner.invoke(
+        app,
+        ["scan", "--config", str(tmp_path), "--report", str(txt_out), "--fail-on", "none"],
+    )
+    assert txt_out.exists()
+    content = txt_out.read_text()
+    assert "ClawGuard" in content
+
+
+# ---------------------------------------------------------------------------
+# CLI: --no-brute and --checkers flags
+# ---------------------------------------------------------------------------
+
 def test_cli_no_brute_flag_accepted(tmp_path):
     """--no-brute flag should be accepted without error."""
     result = runner.invoke(
         app,
-        ["--config", str(tmp_path), "--no-brute", "--fail-on", "none"],
+        ["scan", "--config", str(tmp_path), "--no-brute", "--fail-on", "none"],
     )
-    # Exit code 0 expected (no findings in empty dir with fail-on=none)
-    assert result.exit_code == 0, f"Unexpected exit code: {result.exit_code}\n{result.output}"
+    assert result.exit_code == 0, f"Unexpected exit: {result.exit_code}\n{result.output}"
+
+
+def test_cli_checkers_filter(tmp_path):
+    """--checkers config should run only config checker (no dep/permission errors)."""
+    result = runner.invoke(
+        app,
+        ["scan", "--config", str(tmp_path), "--checkers", "config", "--fail-on", "none"],
+    )
+    assert result.exit_code == 0, f"Unexpected exit: {result.exit_code}\n{result.output}"
+
+
+def test_cli_checkers_multiple(tmp_path):
+    """--checkers config,permission should be accepted."""
+    result = runner.invoke(
+        app,
+        ["scan", "--config", str(tmp_path), "--checkers", "config,permission", "--fail-on", "none"],
+    )
+    assert result.exit_code == 0, f"Unexpected exit: {result.exit_code}\n{result.output}"
+
+
+# ---------------------------------------------------------------------------
+# CLI: list-checkers command
+# ---------------------------------------------------------------------------
+
+def test_cli_list_checkers():
+    """list-checkers should print checker table and exit 0."""
+    result = runner.invoke(app, ["list-checkers"])
+    assert result.exit_code == 0
+    assert "config" in result.output
+    assert "dependency" in result.output
+    assert "permission" in result.output
+
+
+# ---------------------------------------------------------------------------
+# CLI: --format json
+# ---------------------------------------------------------------------------
+
+def test_cli_format_json(tmp_path):
+    """--format json should produce JSON output to stdout."""
+    result = runner.invoke(
+        app,
+        ["scan", "--config", str(tmp_path), "--format", "json", "--fail-on", "none"],
+    )
+    assert result.exit_code == 0
+    # Output should contain parseable JSON fragment
+    assert '"findings"' in result.output

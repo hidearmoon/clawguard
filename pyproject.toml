@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clawguard"
-version = "0.1.0"
+version = "0.3.0"
 description = "Security audit and vulnerability scanner for OpenClaw AI API Gateway deployments"
 readme = "README.md"
 requires-python = ">=3.10"
