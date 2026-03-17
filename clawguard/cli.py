@@ -45,6 +45,11 @@ def scan(
         "--fail-on",
         help="Exit with non-zero code when findings of this severity or above exist (critical|high|medium|low|any|none)",
     ),
+    no_brute: bool = typer.Option(
+        False,
+        "--no-brute",
+        help="Skip default-credential probing (use in environments with account lockout policies)",
+    ),
 ) -> None:
     """Run a ClawGuard security audit against an OpenClaw instance."""
     setup_logging(verbose)
@@ -59,6 +64,7 @@ def scan(
             config_path=config_path,
             api_key=api_key,
             timeout=timeout,
+            options={"no_brute": no_brute},
         ).run()
     )
 

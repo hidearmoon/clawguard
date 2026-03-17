@@ -73,13 +73,48 @@ def _parse_package_json(text: str) -> list[tuple[str, str]]:
 
 
 def _parse_go_mod(text: str) -> list[tuple[str, str]]:
-    """Return (module_path, version) from go.mod."""
+    """Return (module_path, version) from go.mod.
+
+    Handles both single-line and multi-line require blocks:
+        require github.com/foo v1.0.0
+        require (
+            github.com/bar v2.0.0
+            github.com/baz v3.1.0 // indirect
+        )
+    """
     results: list[tuple[str, str]] = []
-    for line in text.splitlines():
-        line = line.strip()
-        m = re.match(r'^([\w./\-]+)\s+v([\d.]+\S*)', line)
-        if m:
-            results.append((m.group(1), m.group(2)))
+    in_require_block = False
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        # Strip inline comments
+        line = re.sub(r'\s*//.*$', '', line).strip()
+
+        if not line:
+            continue
+
+        # Enter multi-line require block
+        if re.match(r'^require\s*\($', line):
+            in_require_block = True
+            continue
+
+        # Exit multi-line require block
+        if in_require_block and line == ')':
+            in_require_block = False
+            continue
+
+        # Single-line: require github.com/foo v1.0.0
+        single = re.match(r'^require\s+([\w./\-]+)\s+v([\d.]+[^\s]*)', line)
+        if single:
+            results.append((single.group(1), single.group(2)))
+            continue
+
+        # Inside a block or bare dependency line: github.com/foo v1.0.0
+        if in_require_block or True:
+            m = re.match(r'^([\w./\-]+)\s+v([\d.]+[^\s]*)', line)
+            if m:
+                results.append((m.group(1), m.group(2)))
+
     return results
 
 
@@ -115,25 +150,54 @@ async def _osv_batch_query(
     return []
 
 
+def _cvss_base_score(vector: str) -> float | None:
+    """
+    Calculate the CVSS base score from a vector string using the cvss library.
+
+    Supports CVSS v2 and v3/v3.1 vector strings (e.g. "CVSS:3.1/AV:N/AC:L/...").
+    Returns None if the vector cannot be parsed.
+    """
+    try:
+        from cvss import CVSS2, CVSS3  # type: ignore[import-untyped]
+
+        if "CVSS:3" in vector or vector.startswith("AV:") and "CVSS:" not in vector:
+            c = CVSS3(vector)
+        else:
+            c = CVSS2(vector)
+        return float(c.base_score)
+    except Exception:
+        return None
+
+
 def _severity_from_osv(vuln: dict[str, Any]) -> Severity:
-    """Map OSV severity / CVSS to ClawGuard Severity."""
-    # OSV database_specific may carry CVSS scores
+    """Map OSV severity / CVSS to ClawGuard Severity.
+
+    Priority order:
+    1. Parse CVSS vector string via cvss library (accurate base score).
+    2. Numeric score in database_specific.cvss_score / database_specific.cvss.
+    3. String label in database_specific.severity (CRITICAL/HIGH/MODERATE/LOW).
+    """
     score = 0.0
+
+    # 1. Parse CVSS vector strings via cvss library
     for sev in vuln.get("severity", []):
-        val = sev.get("score", "")
-        # CVSS vector string → extract base score
-        if "CVSS:3" in str(val):
-            m = re.search(r'/(\d+\.\d+)$', val)
-            if m:
-                score = max(score, float(m.group(1)))
+        val = str(sev.get("score", ""))
+        if val:
+            parsed = _cvss_base_score(val)
+            if parsed is not None:
+                score = max(score, parsed)
+
+    # 2. Numeric score from database_specific fields
     if score == 0.0:
-        # Try database_specific
         db = vuln.get("database_specific", {})
-        score_str = str(db.get("cvss", db.get("severity", "0")))
-        try:
-            score = float(score_str)
-        except ValueError:
-            pass
+        for key in ("cvss_score", "cvss", "NVD_CVSS_V3_Score", "NVD_CVSS_V2_Score"):
+            raw = db.get(key)
+            if raw is not None:
+                try:
+                    score = float(raw)
+                    break
+                except (ValueError, TypeError):
+                    pass
 
     if score >= 9.0:
         return Severity.CRITICAL
@@ -143,7 +207,8 @@ def _severity_from_osv(vuln: dict[str, Any]) -> Severity:
         return Severity.MEDIUM
     if score > 0:
         return Severity.LOW
-    # Default: use OSV severity field if available
+
+    # 3. Fallback: string severity label
     sev_label = vuln.get("database_specific", {}).get("severity", "").upper()
     mapping = {
         "CRITICAL": Severity.CRITICAL,

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 
 from clawguard.checkers.base import BaseChecker, CheckContext, CheckerMode
 from clawguard.models import Finding, Severity
@@ -107,7 +108,17 @@ class ConfigChecker(BaseChecker):
     async def _probe_default_credentials(self, context: CheckContext) -> list[Finding]:
         findings: list[Finding] = []
         assert context.http_client is not None
+
+        if context.options.get("no_brute"):
+            logger.info("[config] credential probe skipped (--no-brute)")
+            return findings
+
         login_url = f"{context.target_url}/api/user/login"
+        logger.warning(
+            "[config] probing default credentials at %s — use --no-brute to skip this check "
+            "if the target has account lockout policies",
+            login_url,
+        )
         common_pairs = [
             ("root", "123456"),
             ("admin", "admin"),
@@ -357,9 +368,11 @@ class ConfigChecker(BaseChecker):
         # --- Database default credentials ---
         findings.extend(self._check_db_credentials(raw, path))
 
-        # --- JSON-specific checks ---
+        # --- Structured config checks ---
         if path.suffix == ".json":
             findings.extend(self._audit_json(raw, path))
+        elif path.suffix in (".yaml", ".yml"):
+            findings.extend(self._audit_yaml(raw, path))
 
         return findings
 
@@ -419,12 +432,9 @@ class ConfigChecker(BaseChecker):
                     )
         return findings
 
-    def _audit_json(self, raw: str, path: Path) -> list[Finding]:
+    def _audit_structured_config(self, cfg: dict[str, Any], path: Path) -> list[Finding]:
+        """Shared structural checks for both JSON and YAML config dicts."""
         findings: list[Finding] = []
-        try:
-            cfg = json.loads(raw)
-        except json.JSONDecodeError:
-            return findings
 
         # Binding to 0.0.0.0 without explicit firewall is risky in many deployments
         bind_addr = cfg.get("bind_address") or cfg.get("host") or cfg.get("listen")
@@ -447,7 +457,7 @@ class ConfigChecker(BaseChecker):
                 )
             )
 
-        # CORS wildcard in JSON config
+        # CORS wildcard in config
         cors = cfg.get("cors") or cfg.get("allowed_origins") or cfg.get("cors_allow_origins")
         if cors in ("*", ["*"]):
             findings.append(
@@ -455,7 +465,7 @@ class ConfigChecker(BaseChecker):
                     checker_name=self.name,
                     title="CORS wildcard configured in local config file",
                     description=(
-                        "The cors / allowed_origins setting is set to '*' in the config file, "
+                        f"The cors / allowed_origins setting is set to '*' in {path.name}, "
                         "permitting cross-origin requests from any domain."
                     ),
                     severity=Severity.MEDIUM,
@@ -464,4 +474,51 @@ class ConfigChecker(BaseChecker):
                 )
             )
 
+        # Debug mode flag in structured config
+        debug_val = cfg.get("debug") or cfg.get("gin_mode")
+        if debug_val is True or str(debug_val).lower() in ("debug", "true", "1"):
+            findings.append(
+                Finding(
+                    checker_name=self.name,
+                    title="Debug mode is enabled in structured config",
+                    description=(
+                        "The debug flag is set to true in the structured config file. "
+                        "Debug mode exposes stack traces and verbose logging in production."
+                    ),
+                    severity=Severity.MEDIUM,
+                    remediation=(
+                        "Set debug: false (or gin_mode: release) before deploying to production."
+                    ),
+                    evidence={"file": str(path), "debug": debug_val},
+                )
+            )
+
+        return findings
+
+    def _audit_yaml(self, raw: str, path: Path) -> list[Finding]:
+        """Parse a YAML config file and run structured security checks."""
+        findings: list[Finding] = []
+        try:
+            cfg = yaml.safe_load(raw)
+        except yaml.YAMLError as exc:
+            logger.debug("[config] failed to parse YAML %s: %s", path, exc)
+            return findings
+
+        if not isinstance(cfg, dict):
+            return findings
+
+        findings.extend(self._audit_structured_config(cfg, path))
+        return findings
+
+    def _audit_json(self, raw: str, path: Path) -> list[Finding]:
+        findings: list[Finding] = []
+        try:
+            cfg = json.loads(raw)
+        except json.JSONDecodeError:
+            return findings
+
+        if not isinstance(cfg, dict):
+            return findings
+
+        findings.extend(self._audit_structured_config(cfg, path))
         return findings
